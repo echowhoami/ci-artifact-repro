@@ -1,0 +1,26 @@
+name: clang-tidy
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  clang-tidy:
+    if: github.repository_owner == 'echowhoami'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run clang-tidy (benign stand-in)
+        run: |
+          echo "no issues found" > clang-tidy-comment.md
+          echo "${{ github.event.pull_request.number }}" > pr_number.txt
+      - name: Upload clang-tidy results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-result
+          path: |
+            clang-tidy-comment.md
+            pr_number.txt
+          if-no-files-found: ignore
