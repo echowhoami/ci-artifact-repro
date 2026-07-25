@@ -1,3 +1,6 @@
+# Mirrors facebook/rocksdb .github/workflows/ai-review-comment.yml AFTER the
+# 2026-07-15 hardening (commit cf22ee8f): artifact is downloaded into _artifact/
+# and every read is re-pointed there.
 name: Post clang-tidy PR comment
 on:
   workflow_run:
@@ -18,6 +21,11 @@ jobs:
         sparse-checkout: .github/scripts
         sparse-checkout-cone-mode: true
 
+    - name: Evidence BEFORE download
+      run: |
+        echo "--- trusted post-pr-comment.js as checked out from main ---"
+        cat .github/scripts/post-pr-comment.js
+
     - name: Download clang-tidy results
       id: download
       uses: actions/download-artifact@v4
@@ -25,14 +33,15 @@ jobs:
         name: clang-tidy-result
         run-id: ${{ github.event.workflow_run.id }}
         github-token: ${{ secrets.GITHUB_TOKEN }}
+        path: _artifact
       continue-on-error: true
 
-    - name: Show what post-pr-comment.js is on disk (evidence)
+    - name: Evidence AFTER download
       if: steps.download.outcome == 'success'
       run: |
-        echo "----- .github/scripts/post-pr-comment.js after download -----"
+        echo "--- _artifact/ tree ---"; find _artifact -type f | sort
+        echo "--- .github/scripts/post-pr-comment.js NOW ---"
         cat .github/scripts/post-pr-comment.js
-        echo "-------------------------------------------------------------"
 
     - name: Post or update PR comment
       if: steps.download.outcome == 'success'
@@ -40,19 +49,14 @@ jobs:
       with:
         script: |
           const fs = require('fs');
-          if (!fs.existsSync('clang-tidy-comment.md') || !fs.existsSync('pr_number.txt')) {
+          if (!fs.existsSync('_artifact/clang-tidy-comment.md') ||
+              !fs.existsSync('_artifact/pr_number.txt')) {
             core.info('No clang-tidy results found; skipping.');
             return;
           }
-          const body = fs.readFileSync('clang-tidy-comment.md', 'utf8');
-          const prNumber = parseInt(fs.readFileSync('pr_number.txt', 'utf8').trim());
+          const body = fs.readFileSync('_artifact/clang-tidy-comment.md', 'utf8');
+          const prNumber = parseInt(
+            fs.readFileSync('_artifact/pr_number.txt', 'utf8').trim(), 10);
           const post = require('./.github/scripts/post-pr-comment.js');
-
-          await post({
-            github,
-            context,
-            core,
-            prNumber,
-            body,
-            marker: '<!-- clang-tidy-bot -->',
-          });
+          await post({ github, context, core, prNumber, body,
+                       marker: '<!-- clang-tidy-bot -->' });
